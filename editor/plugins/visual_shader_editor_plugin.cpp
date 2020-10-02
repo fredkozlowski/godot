@@ -47,6 +47,27 @@
 #include "servers/display_server.h"
 #include "servers/rendering/shader_types.h"
 
+struct FloatConstantDef {
+	String name;
+	float value;
+	String desc;
+};
+
+static FloatConstantDef float_constant_defs[] = {
+	{ "E", Math_E, TTR("E constant (2.718282). Represents the base of the natural logarithm.") },
+	{ "Epsilon", CMP_EPSILON, TTR("Epsilon constant (0.00001). Smallest possible scalar number.") },
+	{ "Phi", 1.618034f, TTR("Phi constant (1.618034). Golden ratio.") },
+	{ "Pi/4", Math_PI / 4, TTR("Pi/4 constant (0.785398) or 45 degrees.") },
+	{ "Pi/2", Math_PI / 2, TTR("Pi/2 constant (1.570796) or 90 degrees.") },
+	{ "Pi", Math_PI, TTR("Pi constant (3.141593) or 180 degrees.") },
+	{ "Tau", Math_TAU, TTR("Tau constant (6.283185) or 360 degrees.") },
+	{ "Sqrt2", Math_SQRT2, TTR("Sqrt2 constant (1.414214). Square root of 2.") }
+};
+
+const int MAX_FLOAT_CONST_DEFS = sizeof(float_constant_defs) / sizeof(FloatConstantDef);
+
+///////////////////
+
 Control *VisualShaderNodePlugin::create_editor(const Ref<Resource> &p_parent_resource, const Ref<VisualShaderNode> &p_node) {
 	if (get_script_instance()) {
 		return get_script_instance()->call("create_editor", p_parent_resource, p_node);
@@ -86,6 +107,7 @@ void VisualShaderGraphPlugin::_bind_methods() {
 	ClassDB::bind_method("update_node_deferred", &VisualShaderGraphPlugin::update_node_deferred);
 	ClassDB::bind_method("set_input_port_default_value", &VisualShaderGraphPlugin::set_input_port_default_value);
 	ClassDB::bind_method("set_uniform_name", &VisualShaderGraphPlugin::set_uniform_name);
+	ClassDB::bind_method("update_constant", &VisualShaderGraphPlugin::update_constant);
 }
 
 void VisualShaderGraphPlugin::register_shader(VisualShader *p_shader) {
@@ -183,8 +205,40 @@ void VisualShaderGraphPlugin::set_uniform_name(VisualShader::Type p_type, int p_
 	}
 }
 
+int VisualShaderGraphPlugin::get_constant_index(float p_constant) const {
+	for (int i = 0; i < MAX_FLOAT_CONST_DEFS; i++) {
+		if (Math::is_equal_approx(p_constant, float_constant_defs[i].value)) {
+			return i + 1;
+		}
+	}
+	return 0;
+}
+
+void VisualShaderGraphPlugin::update_constant(VisualShader::Type p_type, int p_node_id) {
+	if (p_type != visual_shader->get_shader_type() || !links.has(p_node_id) || !links[p_node_id].const_op) {
+		return;
+	}
+	VisualShaderNodeFloatConstant *float_const = Object::cast_to<VisualShaderNodeFloatConstant>(links[p_node_id].visual_node);
+	if (!float_const) {
+		return;
+	}
+	links[p_node_id].const_op->select(get_constant_index(float_const->get_constant()));
+	links[p_node_id].graph_node->set_size(Size2(-1, -1));
+}
+
+void VisualShaderGraphPlugin::update_node_size(int p_node_id) {
+	if (!links.has(p_node_id)) {
+		return;
+	}
+	links[p_node_id].graph_node->set_size(Size2(-1, -1));
+}
+
 void VisualShaderGraphPlugin::register_default_input_button(int p_node_id, int p_port_id, Button *p_button) {
 	links[p_node_id].input_ports.insert(p_port_id, { p_button });
+}
+
+void VisualShaderGraphPlugin::register_constant_option_btn(int p_node_id, OptionButton *p_button) {
+	links[p_node_id].const_op = p_button;
 }
 
 void VisualShaderGraphPlugin::update_uniform_refs() {
@@ -230,7 +284,7 @@ void VisualShaderGraphPlugin::make_dirty(bool p_enabled) {
 }
 
 void VisualShaderGraphPlugin::register_link(VisualShader::Type p_type, int p_id, VisualShaderNode *p_visual_node, GraphNode *p_graph_node) {
-	links.insert(p_id, { p_type, p_visual_node, p_graph_node, p_visual_node->get_output_port_for_preview() != -1, -1, Map<int, InputPort>(), Map<int, Port>(), nullptr, nullptr });
+	links.insert(p_id, { p_type, p_visual_node, p_graph_node, p_visual_node->get_output_port_for_preview() != -1, -1, Map<int, InputPort>(), Map<int, Port>(), nullptr, nullptr, nullptr });
 }
 
 void VisualShaderGraphPlugin::register_output_port(int p_node_id, int p_port, TextureButton *p_button) {
@@ -335,6 +389,23 @@ void VisualShaderGraphPlugin::add_node(VisualShader::Type p_type, int p_id) {
 			}
 			break;
 		}
+	}
+
+	Ref<VisualShaderNodeFloatConstant> float_const = vsnode;
+	if (float_const.is_valid()) {
+		HBoxContainer *hbox = memnew(HBoxContainer);
+
+		hbox->add_child(custom_editor);
+		OptionButton *btn = memnew(OptionButton);
+		hbox->add_child(btn);
+		register_constant_option_btn(p_id, btn);
+		btn->add_item("");
+		for (int i = 0; i < MAX_FLOAT_CONST_DEFS; i++) {
+			btn->add_item(float_constant_defs[i].name);
+		}
+		btn->select(get_constant_index(float_const->get_constant()));
+		btn->connect("item_selected", callable_mp(VisualShaderEditor::get_singleton(), &VisualShaderEditor::_float_constant_selected), varray(p_id));
+		custom_editor = hbox;
 	}
 
 	if (custom_editor && !vsnode->is_use_prop_slots() && vsnode->get_output_port_count() > 0 && vsnode->get_output_port_name(0) == "" && (vsnode->get_input_port_count() == 0 || vsnode->get_input_port_name(0) == "")) {
@@ -1546,9 +1617,24 @@ void VisualShaderEditor::_add_custom_node(const String &p_path) {
 	}
 }
 
-void VisualShaderEditor::_add_texture_node(const String &p_path) {
-	VisualShaderNodeTexture *texture = (VisualShaderNodeTexture *)_add_node(texture_node_option_idx, -1);
-	texture->set_texture(ResourceLoader::load(p_path));
+void VisualShaderEditor::_add_cubemap_node(const String &p_path) {
+	VisualShaderNodeCubemap *cubemap = (VisualShaderNodeCubemap *)_add_node(cubemap_node_option_idx, -1);
+	cubemap->set_cube_map(ResourceLoader::load(p_path));
+}
+
+void VisualShaderEditor::_add_texture2d_node(const String &p_path) {
+	VisualShaderNodeTexture *texture2d = (VisualShaderNodeTexture *)_add_node(texture2d_node_option_idx, -1);
+	texture2d->set_texture(ResourceLoader::load(p_path));
+}
+
+void VisualShaderEditor::_add_texture2d_array_node(const String &p_path) {
+	VisualShaderNodeTexture2DArray *texture2d_array = (VisualShaderNodeTexture2DArray *)_add_node(texture2d_array_node_option_idx, -1);
+	texture2d_array->set_texture_array(ResourceLoader::load(p_path));
+}
+
+void VisualShaderEditor::_add_texture3d_node(const String &p_path) {
+	VisualShaderNodeTexture3D *texture3d = (VisualShaderNodeTexture3D *)_add_node(texture3d_node_option_idx, -1);
+	texture3d->set_texture(ResourceLoader::load(p_path));
 }
 
 VisualShaderNode *VisualShaderEditor::_add_node(int p_idx, int p_op_idx) {
@@ -1658,7 +1744,7 @@ VisualShaderNode *VisualShaderEditor::_add_node(int p_idx, int p_op_idx) {
 			VisualShaderNodeMultiplyAdd *fmaFunc = Object::cast_to<VisualShaderNodeMultiplyAdd>(vsn);
 
 			if (fmaFunc) {
-				fmaFunc->set_type((VisualShaderNodeMultiplyAdd::Type)p_op_idx);
+				fmaFunc->set_op_type((VisualShaderNodeMultiplyAdd::OpType)p_op_idx);
 			}
 		}
 
@@ -1735,12 +1821,26 @@ VisualShaderNode *VisualShaderEditor::_add_node(int p_idx, int p_op_idx) {
 
 void VisualShaderEditor::_node_dragged(const Vector2 &p_from, const Vector2 &p_to, int p_node) {
 	VisualShader::Type type = get_current_shader_type();
+	drag_buffer.push_back({ type, p_node, p_from, p_to });
+	if (!drag_dirty) {
+		call_deferred("_nodes_dragged");
+	}
+	drag_dirty = true;
+}
 
-	undo_redo->create_action(TTR("Node Moved"));
-	undo_redo->add_do_method(visual_shader.ptr(), "set_node_position", type, p_node, p_to);
-	undo_redo->add_undo_method(visual_shader.ptr(), "set_node_position", type, p_node, p_from);
-	undo_redo->add_do_method(graph_plugin.ptr(), "set_node_position", type, p_node, p_to);
-	undo_redo->add_undo_method(graph_plugin.ptr(), "set_node_position", type, p_node, p_from);
+void VisualShaderEditor::_nodes_dragged() {
+	drag_dirty = false;
+
+	undo_redo->create_action(TTR("Node(s) Moved"));
+
+	for (List<DragOp>::Element *E = drag_buffer.front(); E; E = E->next()) {
+		undo_redo->add_do_method(visual_shader.ptr(), "set_node_position", E->get().type, E->get().node, E->get().to);
+		undo_redo->add_undo_method(visual_shader.ptr(), "set_node_position", E->get().type, E->get().node, E->get().from);
+		undo_redo->add_do_method(graph_plugin.ptr(), "set_node_position", E->get().type, E->get().node, E->get().to);
+		undo_redo->add_undo_method(graph_plugin.ptr(), "set_node_position", E->get().type, E->get().node, E->get().from);
+	}
+
+	drag_buffer.clear();
 	undo_redo->commit_action();
 }
 
@@ -2421,6 +2521,30 @@ void VisualShaderEditor::_uniform_select_item(Ref<VisualShaderNodeUniformRef> p_
 	undo_redo->commit_action();
 }
 
+void VisualShaderEditor::_float_constant_selected(int p_index, int p_node) {
+	if (p_index == 0) {
+		graph_plugin->update_node_size(p_node);
+		return;
+	}
+
+	--p_index;
+
+	ERR_FAIL_INDEX(p_index, MAX_FLOAT_CONST_DEFS);
+
+	VisualShader::Type type = get_current_shader_type();
+	Ref<VisualShaderNodeFloatConstant> node = visual_shader->get_node(type, p_node);
+	if (!node.is_valid()) {
+		return;
+	}
+
+	undo_redo->create_action(TTR("Set constant"));
+	undo_redo->add_do_method(node.ptr(), "set_constant", float_constant_defs[p_index].value);
+	undo_redo->add_undo_method(node.ptr(), "set_constant", node->get_constant());
+	undo_redo->add_do_method(graph_plugin.ptr(), "update_constant", type, p_node);
+	undo_redo->add_undo_method(graph_plugin.ptr(), "update_constant", type, p_node);
+	undo_redo->commit_action();
+}
+
 void VisualShaderEditor::_member_filter_changed(const String &p_text) {
 	_update_options_menu();
 }
@@ -2584,7 +2708,22 @@ void VisualShaderEditor::drop_data_fw(const Point2 &p_point, const Variant &p_da
 					} else if (ClassDB::get_parent_class(type) == "Texture2D") {
 						saved_node_pos = p_point + Vector2(0, j * 210 * EDSCALE);
 						saved_node_pos_dirty = true;
-						_add_texture_node(arr[i]);
+						_add_texture2d_node(arr[i]);
+						j++;
+					} else if (type == "Texture2DArray") {
+						saved_node_pos = p_point + Vector2(0, j * 210 * EDSCALE);
+						saved_node_pos_dirty = true;
+						_add_texture2d_array_node(arr[i]);
+						j++;
+					} else if (ClassDB::get_parent_class(type) == "Texture3D") {
+						saved_node_pos = p_point + Vector2(0, j * 210 * EDSCALE);
+						saved_node_pos_dirty = true;
+						_add_texture3d_node(arr[i]);
+						j++;
+					} else if (type == "Cubemap") {
+						saved_node_pos = p_point + Vector2(0, j * 210 * EDSCALE);
+						saved_node_pos_dirty = true;
+						_add_cubemap_node(arr[i]);
 						j++;
 					}
 				}
@@ -2650,6 +2789,8 @@ void VisualShaderEditor::_bind_methods() {
 	ClassDB::bind_method("_clear_buffer", &VisualShaderEditor::_clear_buffer);
 	ClassDB::bind_method("_update_uniforms", &VisualShaderEditor::_update_uniforms);
 	ClassDB::bind_method("_set_mode", &VisualShaderEditor::_set_mode);
+	ClassDB::bind_method("_nodes_dragged", &VisualShaderEditor::_nodes_dragged);
+	ClassDB::bind_method("_float_constant_selected", &VisualShaderEditor::_float_constant_selected);
 
 	ClassDB::bind_method(D_METHOD("get_drag_data_fw"), &VisualShaderEditor::get_drag_data_fw);
 	ClassDB::bind_method(D_METHOD("can_drop_data_fw"), &VisualShaderEditor::can_drop_data_fw);
@@ -3118,15 +3259,9 @@ VisualShaderEditor::VisualShaderEditor() {
 
 	//CONSTANTS
 
-	add_options.push_back(AddOption("E", "Scalar", "Constants", "VisualShaderNodeFloatConstant", TTR("E constant (2.718282). Represents the base of the natural logarithm."), -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, Math_E));
-	add_options.push_back(AddOption("Epsilon", "Scalar", "Constants", "VisualShaderNodeFloatConstant", TTR("Epsilon constant (0.00001). Smallest possible scalar number."), -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, CMP_EPSILON));
-	add_options.push_back(AddOption("Phi", "Scalar", "Constants", "VisualShaderNodeFloatConstant", TTR("Phi constant (1.618034). Golden ratio."), -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, 1.618034f));
-	add_options.push_back(AddOption("Pi/4", "Scalar", "Constants", "VisualShaderNodeFloatConstant", TTR("Pi/4 constant (0.785398) or 45 degrees."), -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, Math_PI / 4));
-	add_options.push_back(AddOption("Pi/2", "Scalar", "Constants", "VisualShaderNodeFloatConstant", TTR("Pi/2 constant (1.570796) or 90 degrees."), -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, Math_PI / 2));
-	add_options.push_back(AddOption("Pi", "Scalar", "Constants", "VisualShaderNodeFloatConstant", TTR("Pi constant (3.141593) or 180 degrees."), -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, Math_PI));
-	add_options.push_back(AddOption("Tau", "Scalar", "Constants", "VisualShaderNodeFloatConstant", TTR("Tau constant (6.283185) or 360 degrees."), -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, Math_TAU));
-	add_options.push_back(AddOption("Sqrt2", "Scalar", "Constants", "VisualShaderNodeFloatConstant", TTR("Sqrt2 constant (1.414214). Square root of 2."), -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, Math_SQRT2));
-
+	for (int i = 0; i < MAX_FLOAT_CONST_DEFS; i++) {
+		add_options.push_back(AddOption(float_constant_defs[i].name, "Scalar", "Constants", "VisualShaderNodeFloatConstant", float_constant_defs[i].desc, -1, VisualShaderNode::PORT_TYPE_SCALAR, -1, -1, float_constant_defs[i].value));
+	}
 	// FUNCTIONS
 
 	add_options.push_back(AddOption("Abs", "Scalar", "Functions", "VisualShaderNodeFloatFunc", TTR("Returns the absolute value of the parameter."), VisualShaderNodeFloatFunc::FUNC_ABS, VisualShaderNode::PORT_TYPE_SCALAR));
@@ -3154,7 +3289,7 @@ VisualShaderEditor::VisualShaderEditor() {
 	add_options.push_back(AddOption("Max", "Scalar", "Functions", "VisualShaderNodeFloatOp", TTR("Returns the greater of two values."), VisualShaderNodeFloatOp::OP_MAX, VisualShaderNode::PORT_TYPE_SCALAR));
 	add_options.push_back(AddOption("Min", "Scalar", "Functions", "VisualShaderNodeFloatOp", TTR("Returns the lesser of two values."), VisualShaderNodeFloatOp::OP_MIN, VisualShaderNode::PORT_TYPE_SCALAR));
 	add_options.push_back(AddOption("Mix", "Scalar", "Functions", "VisualShaderNodeScalarInterp", TTR("Linear interpolation between two scalars."), -1, VisualShaderNode::PORT_TYPE_SCALAR));
-	add_options.push_back(AddOption("MultiplyAdd", "Scalar", "Functions", "VisualShaderNodeMultiplyAdd", TTR("Performs a fused multiply-add operation (a * b + c) on scalars."), VisualShaderNodeMultiplyAdd::TYPE_SCALAR, VisualShaderNode::PORT_TYPE_SCALAR));
+	add_options.push_back(AddOption("MultiplyAdd", "Scalar", "Functions", "VisualShaderNodeMultiplyAdd", TTR("Performs a fused multiply-add operation (a * b + c) on scalars."), VisualShaderNodeMultiplyAdd::OP_TYPE_SCALAR, VisualShaderNode::PORT_TYPE_SCALAR));
 	add_options.push_back(AddOption("Negate", "Scalar", "Functions", "VisualShaderNodeFloatFunc", TTR("Returns the opposite value of the parameter."), VisualShaderNodeFloatFunc::FUNC_NEGATE, VisualShaderNode::PORT_TYPE_SCALAR));
 	add_options.push_back(AddOption("Negate", "Scalar", "Functions", "VisualShaderNodeIntFunc", TTR("Returns the opposite value of the parameter."), VisualShaderNodeIntFunc::FUNC_NEGATE, VisualShaderNode::PORT_TYPE_SCALAR_INT));
 	add_options.push_back(AddOption("OneMinus", "Scalar", "Functions", "VisualShaderNodeFloatFunc", TTR("1.0 - scalar"), VisualShaderNodeFloatFunc::FUNC_ONEMINUS, VisualShaderNode::PORT_TYPE_SCALAR));
@@ -3192,11 +3327,13 @@ VisualShaderEditor::VisualShaderEditor() {
 	add_options.push_back(AddOption("IntUniform", "Scalar", "Variables", "VisualShaderNodeIntUniform", TTR("Scalar integer uniform."), -1, VisualShaderNode::PORT_TYPE_SCALAR_INT));
 
 	// TEXTURES
-
+	cubemap_node_option_idx = add_options.size();
 	add_options.push_back(AddOption("CubeMap", "Textures", "Functions", "VisualShaderNodeCubemap", TTR("Perform the cubic texture lookup."), -1, -1));
-	texture_node_option_idx = add_options.size();
+	texture2d_node_option_idx = add_options.size();
 	add_options.push_back(AddOption("Texture2D", "Textures", "Functions", "VisualShaderNodeTexture", TTR("Perform the 2D texture lookup."), -1, -1));
+	texture2d_array_node_option_idx = add_options.size();
 	add_options.push_back(AddOption("Texture2DArray", "Textures", "Functions", "VisualShaderNodeTexture2DArray", TTR("Perform the 2D-array texture lookup."), -1, -1, -1, -1, -1));
+	texture3d_node_option_idx = add_options.size();
 	add_options.push_back(AddOption("Texture3D", "Textures", "Functions", "VisualShaderNodeTexture3D", TTR("Perform the 3D texture lookup."), -1, -1));
 
 	add_options.push_back(AddOption("CubeMapUniform", "Textures", "Variables", "VisualShaderNodeCubemapUniform", TTR("Cubic texture uniform lookup."), -1, -1));
@@ -3260,7 +3397,7 @@ VisualShaderEditor::VisualShaderEditor() {
 	add_options.push_back(AddOption("Min", "Vector", "Functions", "VisualShaderNodeVectorOp", TTR("Returns the lesser of two values."), VisualShaderNodeVectorOp::OP_MIN, VisualShaderNode::PORT_TYPE_VECTOR));
 	add_options.push_back(AddOption("Mix", "Vector", "Functions", "VisualShaderNodeVectorInterp", TTR("Linear interpolation between two vectors."), -1, VisualShaderNode::PORT_TYPE_VECTOR));
 	add_options.push_back(AddOption("MixS", "Vector", "Functions", "VisualShaderNodeVectorScalarMix", TTR("Linear interpolation between two vectors using scalar."), -1, VisualShaderNode::PORT_TYPE_VECTOR));
-	add_options.push_back(AddOption("MultiplyAdd", "Vector", "Functions", "VisualShaderNodeMultiplyAdd", TTR("Performs a fused multiply-add operation (a * b + c) on vectors."), VisualShaderNodeMultiplyAdd::TYPE_VECTOR, VisualShaderNode::PORT_TYPE_VECTOR));
+	add_options.push_back(AddOption("MultiplyAdd", "Vector", "Functions", "VisualShaderNodeMultiplyAdd", TTR("Performs a fused multiply-add operation (a * b + c) on vectors."), VisualShaderNodeMultiplyAdd::OP_TYPE_VECTOR, VisualShaderNode::PORT_TYPE_VECTOR));
 	add_options.push_back(AddOption("Negate", "Vector", "Functions", "VisualShaderNodeVectorFunc", TTR("Returns the opposite value of the parameter."), VisualShaderNodeVectorFunc::FUNC_NEGATE, VisualShaderNode::PORT_TYPE_VECTOR));
 	add_options.push_back(AddOption("Normalize", "Vector", "Functions", "VisualShaderNodeVectorFunc", TTR("Calculates the normalize product of vector."), VisualShaderNodeVectorFunc::FUNC_NORMALIZE, VisualShaderNode::PORT_TYPE_VECTOR));
 	add_options.push_back(AddOption("OneMinus", "Vector", "Functions", "VisualShaderNodeVectorFunc", TTR("1.0 - vector"), VisualShaderNodeVectorFunc::FUNC_ONEMINUS, VisualShaderNode::PORT_TYPE_VECTOR));
@@ -3506,6 +3643,9 @@ public:
 		if (p_property != "constant") {
 			undo_redo->add_do_method(VisualShaderEditor::get_singleton()->get_graph_plugin(), "update_node_deferred", shader_type, node_id);
 			undo_redo->add_undo_method(VisualShaderEditor::get_singleton()->get_graph_plugin(), "update_node_deferred", shader_type, node_id);
+		} else {
+			undo_redo->add_do_method(VisualShaderEditor::get_singleton()->get_graph_plugin(), "update_constant", shader_type, node_id);
+			undo_redo->add_undo_method(VisualShaderEditor::get_singleton()->get_graph_plugin(), "update_constant", shader_type, node_id);
 		}
 		undo_redo->commit_action();
 

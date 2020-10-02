@@ -25,6 +25,7 @@
 	</description>
 	<tutorials>
 		<link title="File system">https://docs.godotengine.org/en/latest/getting_started/step_by_step/filesystem.html</link>
+		<link title="3D Voxel Demo">https://godotengine.org/asset-library/asset/676</link>
 	</tutorials>
 	<methods>
 		<method name="close">
@@ -399,8 +400,7 @@
 			<argument index="0" name="line" type="String">
 			</argument>
 			<description>
-				Stores the given [String] as a line in the file.
-				Text will be encoded as UTF-8.
+				Appends [code]line[/code] to the file followed by a line return character ([code]\n[/code]), encoding the text as UTF-8.
 			</description>
 		</method>
 		<method name="store_pascal_string">
@@ -428,8 +428,7 @@
 			<argument index="0" name="string" type="String">
 			</argument>
 			<description>
-				Stores the given [String] in the file.
-				Text will be encoded as UTF-8.
+				Appends [code]string[/code] to the file without a line return, encoding the text as UTF-8.
 			</description>
 		</method>
 		<method name="store_var">
